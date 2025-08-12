@@ -9,6 +9,9 @@ from torch.nn import CrossEntropyLoss, Conv2d, BatchNorm2d
 from torch.optim import SGD, lr_scheduler
 import torchvision
 
+from utils.data import get_dataloader
+from utils.models import construct_rn9
+
 def train(model, loader, lr=0.4, epochs=24, momentum=0.9,
           weight_decay=5e-4, lr_peak_epoch=5, label_smoothing=0.0, model_id=0):
 
