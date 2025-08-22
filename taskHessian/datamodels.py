@@ -23,7 +23,6 @@ def eval_test_loss(model, loss_fn, load_batch_fn, test_dataset, batch_size, batc
     return batch_loss_list
 
 def get_subset_scores(model, model_path, model_name, train_ids_list, loss_fn, load_batch_fn, test_dataset, test_batch_size=1, test_batch_num=50, device='cuda'):
-    num_samples = np.max(train_ids_list) + 1
     pattern = re.compile(rf"^{re.escape(model_name)}_\w+\.pth$")
     model_file_list = []
     for file in os.listdir(model_path):
