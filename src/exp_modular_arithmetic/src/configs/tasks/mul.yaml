@@ -1,0 +1,50 @@
+task:
+  name: "modular_arithmetic"
+  task_kwargs:
+    p: 97
+    task: "mul"
+    num_input_numbers: 2
+    num_total_samples: 10000
+    train_ratio: 0.4
+    valid_ratio: 0.2
+    split_ratio: 0.9
+    seq_len: 5
+
+    num_samples_for_neighbors: 100
+
+model:
+  type: "decoder"
+  activation: "relu"
+  dim: 128
+  num_layers: 1
+  num_heads: 4
+  model_kwargs:
+    num_tokens: none
+    max_len: none
+
+optimizer:
+  base_optimizer: "AdamW"
+  loss: "CE"
+  name: none
+  lr: 0.0001
+  wd: 1
+  beta1: 0.9
+  beta2: 0.98
+  optimizer_kwargs:
+    rho: 0.05
+    nsm_sigma: 0.001
+    distribution: normal
+  dropout_p: 0.0
+  device: 0
+
+train:
+  budget: 1000000
+  hessian_log_every: 100
+  hessian_log_size: 1000
+  batch_size: 512
+  converge_threshold: 0.99
+  seed: 1
+
+logger:
+  dir: "./logs/results_logs"
+  save_every: 200

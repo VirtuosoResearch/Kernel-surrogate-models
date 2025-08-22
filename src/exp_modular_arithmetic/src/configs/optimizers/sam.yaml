@@ -1,0 +1,4 @@
+optimizer:
+  name: SAM
+  optimizer_kwargs:
+    rho: 0.05
