@@ -8,3 +8,4 @@ dataset/
 subset_indices/
 
 *.egg-info/
+*.pdf
