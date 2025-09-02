@@ -7,6 +7,27 @@ import yaml
 import logging
 import random
 
+def get_save_file_paths(task_name, bar, subset_ratio, subset_num, p, train_ratio):
+    group_name = f'bar_{bar}_subset_ratio_{subset_ratio}_with_{subset_num}'
+    model_path = f'./checkpoints/{task_name}/{group_name}/'
+    dataset_path = f'./dataset/{task_name}_p_{p}_split_{train_ratio}'
+    os.makedirs(f'{dataset_path}/{group_name}/', exist_ok=True)
+    groups_file = f'{dataset_path}/{group_name}/groups.json'
+    chosen_groups_file = f'{dataset_path}/{group_name}/chosen_groups.json'
+
+    run_name = f'{task_name}_p_{p}_split_{train_ratio}_bar_{bar}_subset_ratio_{subset_ratio}_with_{subset_num}'
+    result_path = f'./results/{run_name}'
+
+    return {
+        'model_path': model_path,
+        'dataset_path': dataset_path,
+        'groups_file': groups_file,
+        'chosen_groups_file': chosen_groups_file,
+        'run_name': run_name,
+        'result_path': result_path
+    }
+    
+
 def get_free_gpu():
     os.system('nvidia-smi -q -d Memory |grep -A5 GPU|grep Free >tmp')
     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]

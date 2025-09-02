@@ -43,7 +43,7 @@ class ModularArithmetic(Task):
 
         # self.train_data, self.valid_data = split_data(data, self.split_ratio)
         self.train_data = data[:int(data.shape[0] * self.train_ratio)]
-        self.valid_data = data[-int(data.shape[0] * self.valid_ratio):]
+        self.valid_data = data[int(data.shape[0] * self.train_ratio):]
         self.train_num = self.train_data.shape[0]
         self.valid_num = self.valid_data.shape[0]
         print(f"Train data: {self.train_data.shape}", f"Valid data: {self.valid_data.shape}")

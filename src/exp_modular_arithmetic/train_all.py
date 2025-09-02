@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 # Pytorch's efficient attention doesn't allow Hessian computation by default
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -90,11 +91,12 @@ def eval(task, dataloader, model, loss_fn, device):
 
 def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_dataloader, device, model_id=0, epochs=10, logger=None):
     pbar = tqdm(range(epochs))
+    task_name = config.task.task_kwargs.task
     train_num = len(train_dataloader.dataset)
     valid_num = len(valid_dataloader.dataset)
-    phase1_folder = './checkpoints/phase1'
-    phase2_folder = './checkpoints/phase2'
-    phase3_folder = './checkpoints/phase3'
+    phase1_folder = f'./checkpoints/{task_name}/phase1/all'
+    phase2_folder = f'./checkpoints/{task_name}/phase2/all'
+    phase3_folder = f'./checkpoints/{task_name}/phase3/all'
     os.makedirs(phase1_folder, exist_ok=True)
     os.makedirs(phase2_folder, exist_ok=True)
     os.makedirs(phase3_folder, exist_ok=True)
@@ -106,9 +108,9 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
     else:
         model_reg = ''
 
-    phase1_path = os.path.join(phase1_folder, f'{model_reg}model_{model_id}.pth')
-    phase2_path = os.path.join(phase2_folder, f'{model_reg}model_{model_id}.pth')
-    phase3_path = os.path.join(phase3_folder, f'{model_reg}model_{model_id}.pth')
+    phase1_path = os.path.join(phase1_folder, f'{model_reg}model_all_{model_id}.pth')
+    phase2_path = os.path.join(phase2_folder, f'{model_reg}model_all_{model_id}.pth')
+    phase3_path = os.path.join(phase3_folder, f'{model_reg}model_all_{model_id}.pth')
 
     # State vars
     i = 0 # Step
@@ -131,15 +133,9 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
     phase = 'init'
     swa_n = 0
     for e in pbar:
+        i += 1
         do_log = (e+1) % config.logger.save_every == 0 or e<1
-        """
-        if train_converge > 0:
-            do_log = (e+1) % 300 == 0 or e<1
-        else:
-            do_log = (e+1) % config.logger.save_every == 0 or e<1
-        if weight_decay > 0:
-            do_log = (e+1) % config.logger.save_every == 0 or e<1
-        """
+
         data_loaders = [(train_dataloader, True), (valid_dataloader, False)]
         for data_loader_idx, (dataloader, is_train) in enumerate(data_loaders):
 
@@ -154,7 +150,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
             for batch in dataloader:
                 
                 # Per batch, both train and val
-                batch = batch[0].to(device)                
+                batch = batch[0].to(device)         
                 logits = model(batch[:, :-1])
 
                 # Loss
@@ -165,11 +161,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
                 #total_acc += acc * batch.shape[0]
 
                 if is_train:
-                    i += 1
-                    #if set_zero_loss:
-                    #    loss = torch.tensor(0.0, requires_grad=True, device=device).backward() 
-                    #else:
-                    #    loss.backward() 
+
                     loss.backward()
                     # Update model parameters
                     if config.nsm:
@@ -235,7 +227,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
                 if train_converge < 0 and train_acc >= config.train.converge_threshold:
                 #if train_converge < 0 and train_loss <= config.train.loss_converge_threshold:
                     train_converge = i
-                    torch.save(model.state_dict(), phase1_path)
+                    #torch.save(model.state_dict(), phase1_path)
                     logger.log_value("save_spectrum", 2)
                     #model.save_init_state()
                 best_train_acc = max(best_train_acc, train_acc)
@@ -249,7 +241,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
                 val_acc = total_acc / valid_num
                 if val_converge < 0 and val_acc >= config.train.converge_threshold:
                     val_converge = i
-                    torch.save(model.state_dict(), phase3_path)
+                    #torch.save(model.state_dict(), phase3_path)
 
                 if train_converge > 0:
                     cleaned_val_acc = remove_outliers(logger["val_acc"]['value'])
@@ -258,7 +250,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
                     #if val_converge < 0 and grok_start < 0:
                     #    grok_start = detect_rise_with_window(cleaned_val_acc, i)
                     if val_acc > 0.6 and grok_start<0:
-                        torch.save(model.state_dict(), phase2_path)
+                        #torch.save(model.state_dict(), phase2_path)
                         grok_start = i
 
                 best_val_acc = max(best_val_acc, val_acc)
@@ -269,6 +261,15 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
                 logger.log_value("val_converge", val_converge)
                 logger.log_value("grok_start", grok_start)
         
+        # if (e+1) == 110:
+        #     torch.save(model.state_dict(), phase1_path)
+
+        # if (e+1) == 1700:
+        #     torch.save(model.state_dict(), phase2_path)
+
+        # if (e+1) == epochs:
+        #     torch.save(model.state_dict(), phase3_path)
+
         if do_log:
             
             logger.log("loss_gap", val_loss - train_loss, i)
@@ -276,7 +277,7 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
             if config.train.hessian_log_every > 0:
 
                 hessian_calculator = Hessian_Calculator(model=model, loss_fn=loss_fn, p=task.p, dataloader=train_dataloader, valid_dataloader=valid_dataloader, device=device)
-                
+                hessian_calculator.approximate_hessian_trace(logger=logger, log_i=i, train_num=train_num, valid_num=valid_num)
                 #hessian_calculator.compute_spectrum(train_num=train_num, n_iter=100, n_v=1, method=3)
                 #hessian_calculator.collect(train_num)
                 #hessian_calculator.log(logger, i)
@@ -299,14 +300,14 @@ def train(config, task, model, optimizer, loss_fn, train_dataloader, valid_datal
 def run_experiment(config):
     
     # Seed
-    seed_everything(config.train.seed)
+    #seed_everything(config.train.seed)
 
     # Device
     device = torch.device(f"cuda:{int(config.optimizer.device)}") # get_device()
 
     # Task
     #task = get_task(config.task)
-    data_path = './dataset/'
+    data_path = f'./dataset/{config.task.task_kwargs.task}_p_{config.task.task_kwargs.p}_split_{config.task.task_kwargs.train_ratio}'
     task = ModularArithmetic(config.task.task_kwargs)
     if os.path.exists(data_path):
         print(f"Using existing dataset at {data_path}")
@@ -319,18 +320,12 @@ def run_experiment(config):
         os.mkdir(data_path)
         torch.save(train_dataset, os.path.join(data_path, 'train_dataset.pt'))
         torch.save(valid_dataset, os.path.join(data_path, 'valid_dataset.pt'))
-    
-    train_loaders, train_ids_list, test_loader = get_subset_dataloader(
-        train_dataset, valid_dataset, 
-        subset_ratio=0.6, 
-        subset_num=50, 
-        batch_size=config.train.batch_size, 
-        num_workers=8
-    )
+
+    train_loader = DataLoader(train_dataset, batch_size=config.train.batch_size, shuffle=True, num_workers=8)
+    test_loader = DataLoader(valid_dataset, batch_size=config.train.batch_size, shuffle=False, num_workers=8)
 
     # Logger
-    data_str = "_numbers_" + str(config.task.task_kwargs.num_input_numbers) + \
-            "_samples_" + str(config.task.task_kwargs.num_total_samples) + \
+    data_str = "_p_" + str(config.task.task_kwargs.p) + \
             "_train_" + str(config.task.task_kwargs.train_ratio) + \
             "_valid_" + str(config.task.task_kwargs.valid_ratio)
 
@@ -369,89 +364,88 @@ def run_experiment(config):
         log_dir = config.logger.dir
     logger = Logger(label, log_dir)
 
-    for i, train_loader in enumerate(train_loaders):
-        print(f"Training on subset {i} with {len(train_loader.dataset)} samples")
-        train_num = len(train_loader.dataset)
-        valid_num = len(test_loader.dataset)
-        # Model
-        model = Decoder(
-            dim=config.model.dim, num_layers=config.model.num_layers, num_heads=config.model.num_heads, num_tokens=task.p + 2, seq_len=task.seq_len, activation_name=config.model.activation, dropout_p=config.optimizer.dropout_p
+    train_num = len(train_loader.dataset)
+    valid_num = len(test_loader.dataset)
+    # Model
+    model = Decoder(
+        dim=config.model.dim, num_layers=config.model.num_layers, num_heads=config.model.num_heads, num_tokens=task.p + 2, seq_len=task.seq_len, activation_name=config.model.activation, dropout_p=config.optimizer.dropout_p
+    ).to(device)
+
+    if config.model_type == 'mlp':
+        model = MLP_arithmetic(
+            dim=128, num_layers=config.model.num_layers, num_tokens=task.p + 2, seq_len=task.seq_len, activation_name=config.model.activation, dropout_p=config.optimizer.dropout_p
         ).to(device)
+    model = model.to(device)
 
-        if config.model_type == 'mlp':
-            model = MLP_arithmetic(
-                dim=128, num_layers=config.model.num_layers, num_tokens=task.p + 2, seq_len=task.seq_len, activation_name=config.model.activation, dropout_p=config.optimizer.dropout_p
-            ).to(device)
-        model = model.to(device)
+    print(model)
+    print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
+    print(f"Device: {device}")
 
-        print(model)
-        print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
-        print(f"Device: {device}")
+    def loss_fn(logits, sequence, reduction='mean'):
+        return F.cross_entropy(logits[:, -1], sequence[:, -1], reduction=reduction)
 
-        def loss_fn(logits, sequence, reduction='mean'):
-            return F.cross_entropy(logits[:, -1], sequence[:, -1], reduction=reduction)
+    # Optimizer
+    #optimizer = get_optimizer(config.optimizer, model)
+    lr = config.optimizer.lr
+    weight_decay = config.optimizer.wd
+    betas = (config.optimizer.beta1, config.optimizer.beta2)
+    if config.nsm:
+        # NSM optimizer
+        print(f"Using NSM optimizer with sigma={config.optimizer.optimizer_kwargs.nsm_sigma}, distribution={config.optimizer.optimizer_kwargs.distribution}")
+        base_optimizer = getattr(torch.optim, config.optimizer.base_optimizer)
+        optimizer = NSM(
+            model.parameters(),
+            base_optimizer,
+            sigma=config.optimizer.optimizer_kwargs.nsm_sigma,
+            distribution=config.optimizer.optimizer_kwargs.distribution,
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas
+        )
+        #  linear learning rate warmup over the first 10 updates
+        # scheduler = torch.optim.lr_scheduler.LambdaLR(
+        #     optimizer.base_optimizer, lambda update: 1 if update > 10 else update / 10
+        # )
+    elif config.sam:
+        # SAM optimizer
+        print(f"Using SAM optimizer")
+        base_optimizer = getattr(torch.optim, config.optimizer.base_optimizer)
+        optimizer = SAM(
+            model.parameters(),
+            base_optimizer,
+            rho=config.optimizer.optimizer_kwargs.rho,
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
+        #  linear learning rate warmup over the first 10 updates
+        # scheduler = torch.optim.lr_scheduler.LambdaLR(
+        #     optimizer.base_optimizer, lambda update: 1 if update > 10 else update / 10
+        # )
+    else:
+        optimizer = getattr(torch.optim, config.optimizer.base_optimizer)(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay
+            #betas=(args.beta1, args.beta2),
+        )
 
-        # Optimizer
-        #optimizer = get_optimizer(config.optimizer, model)
-        lr = config.optimizer.lr
-        weight_decay = config.optimizer.wd
-        betas = (config.optimizer.beta1, config.optimizer.beta2)
-        if config.nsm:
-            # NSM optimizer
-            print(f"Using NSM optimizer with sigma={config.optimizer.optimizer_kwargs.nsm_sigma}, distribution={config.optimizer.optimizer_kwargs.distribution}")
-            base_optimizer = getattr(torch.optim, config.optimizer.base_optimizer)
-            optimizer = NSM(
-                model.parameters(),
-                base_optimizer,
-                sigma=config.optimizer.optimizer_kwargs.nsm_sigma,
-                distribution=config.optimizer.optimizer_kwargs.distribution,
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas
-            )
-            #  linear learning rate warmup over the first 10 updates
-            # scheduler = torch.optim.lr_scheduler.LambdaLR(
-            #     optimizer.base_optimizer, lambda update: 1 if update > 10 else update / 10
-            # )
-        elif config.sam:
-            # SAM optimizer
-            print(f"Using SAM optimizer")
-            base_optimizer = getattr(torch.optim, config.optimizer.base_optimizer)
-            optimizer = SAM(
-                model.parameters(),
-                base_optimizer,
-                rho=config.optimizer.optimizer_kwargs.rho,
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-            #  linear learning rate warmup over the first 10 updates
-            # scheduler = torch.optim.lr_scheduler.LambdaLR(
-            #     optimizer.base_optimizer, lambda update: 1 if update > 10 else update / 10
-            # )
-        else:
-            optimizer = getattr(torch.optim, config.optimizer.base_optimizer)(
-                model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay
-                #betas=(args.beta1, args.beta2),
-            )
 
-    
 
-        # Compute/save hessian condition
-        if config.train.hessian_log_every == 0 or config.train.hessian_log_every is None:
-            def log_hessian(e):
-                return False
-        else:
-            def log_hessian(e):
-                return (e < 10 or (e+1) % config.train.hessian_log_every == 0)
+    # Compute/save hessian condition
+    if config.train.hessian_log_every == 0 or config.train.hessian_log_every is None:
+        def log_hessian(e):
+            return False
+    else:
+        def log_hessian(e):
+            return (e < 10 or (e+1) % config.train.hessian_log_every == 0)
 
-        steps_per_epoch = math.ceil(train_num / config.train.batch_size)
-        total_epochs = config.train.budget // steps_per_epoch
-        print(f"Epochs: {total_epochs}, steps per epoch: {steps_per_epoch}, train num: {train_num}")
+    steps_per_epoch = math.ceil(train_num / config.train.batch_size)
+    #total_epochs = config.train.budget // steps_per_epoch
+    total_epochs = 2500
+    print(f"Epochs: {total_epochs}, steps per epoch: {steps_per_epoch}, train num: {train_num}")
 
-        train(config, task, model, optimizer, loss_fn, train_loader, test_loader, device, model_id=i, epochs=total_epochs, logger=logger)
+    train(config, task, model, optimizer, loss_fn, train_loader, test_loader, device, model_id=config.mark, epochs=total_epochs, logger=logger)
 
 
 def update_config(config, args):
@@ -491,7 +485,7 @@ if __name__ == "__main__":
     # parser.add_argument("--num_input_numbers", type=int, default=2)
     # parser.add_argument("--num_total_samples", type=int, default=10000)
     parser.add_argument("--train_ratio", type=float, default=0.8)
-    parser.add_argument("--valid_ratio", type=float, default=0.2)
+    parser.add_argument("--valid_ratio", type=float, default=0.1)
 
     args = parser.parse_args()
 

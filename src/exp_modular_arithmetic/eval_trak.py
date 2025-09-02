@@ -118,7 +118,7 @@ if __name__ == "__main__":
         device=device
     )
 
-    mm = np.load('./results/trak_results/scores/quickstart.mmap', mmap_mode='r')
+    mm = np.load(f'./results/trak_results/{name}/scores/quickstart.mmap', mmap_mode='r')
     trak_scores = torch.from_numpy(mm)
 
     results_list = []

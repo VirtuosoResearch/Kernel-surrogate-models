@@ -24,23 +24,15 @@ from scipy.stats import entropy
 from scipy.stats import pearsonr
 
 # from src.bound.compute_bounds import *
-from pynvml import *
 
-def print_gpu_utilization():
-    nvmlInit()
-    memory = 0
-    handle = nvmlDeviceGetHandleByIndex(0)
-    info = nvmlDeviceGetMemoryInfo(handle)
-    # print(info.used, info.total)
-    print(f"GPU memory occupied: {info.used//1024**2} MB.")
-    memory += info.used//1024**2
 
 class Hessian_Calculator():
-    def __init__(self, model, loss_fn, p, dataloader=None, valid_dataloader=None, external_load_batch_func=None, device='cpu'):
+    def __init__(self, model, loss_fn, p, dataloader=None, valid_dataloader=None, external_load_batch_func=None, lino_sigma=0, device='cpu'):
         self.p = p
         self.num_classes = p+2
         self.model = model.eval()  # make model is in evaluation model
         self.loss_fn = loss_fn
+        self.lino_sigma = lino_sigma
         self.aggregate_method = 'mean'
 
         if external_load_batch_func is not None:
@@ -217,7 +209,10 @@ class Hessian_Calculator():
         for batch in dataloader:
             # Specific data process, in order to fit the loss input
             data, target, batch_size = self.load_batch_func(batch, self.device)
-            output = self.model(data)
+            if self.lino_sigma == 0:
+                output = self.model(data)
+            else:
+                output = self.model(data, embed_noise=True, sigma=self.lino_sigma, method='rule_noise')
             loss = self.loss_fn(output, target, 'mean')
             #self.model.zero_grad()
 
@@ -340,13 +335,13 @@ class Hessian_Calculator():
             device = self.device
             model = self.model
             loss_fn = self.loss_fn
-            sample_num = 10
+            sample_num = 50
             train_hessian_list = []
             valid_hessian_list = []
             for i in range(sample_num):
                 noise_vector = None
                 train_hessian = 0
-                valid_hessian = 0
+                train_hessian_2 = 0
                 for train_batch in self.dataloader:
                     data, target, batch_size = self.load_batch_func(train_batch, device)
                     output = model(data)
@@ -840,7 +835,8 @@ class Hessian_Calculator():
         sample_size = train_num
         alpha = 0.2
         all_selected_probs = []
-        for batch in self.valid_dataloader:
+        #for batch in self.valid_dataloader:
+        for batch in self.dataloader:
             data, target, batch_size = self.load_batch_func(batch, self.device)
             output = self.model(data)
             #loss = self.loss_fn(output, target, 'mean')
@@ -856,67 +852,71 @@ class Hessian_Calculator():
         alpha = (bdp_alpha) / (valid_num) # TODO
 
         delta = np.log2(1 + (1 - alpha) * vocab_size / alpha)
+        delta = 1
         compression_bound = llm_subsampling_bound(train_error=train_loss, div=divergence, data_size=total_sample_size, sample_size=sample_size, delta=delta)
         compression_bound = compression_bound - train_loss
         logger.log("compression_bound", compression_bound, log_i)
-        plot_curves(log=logger, data_names=['loss_gap', 'compression_bound'], path_name='compression', file_name='compression_bound')
+        #plot_curves(log=logger, data_names=['loss_gap', 'compression_bound'], path_name='compression', file_name='compression_bound')
         return compression_bound
 
     def compare_bound(self, logger, log_i, train_num, valid_num, train_loss, n_iter=10, n_v=5):
         # compte compression bound baseline
         compression_bound = self.compute_compression_bound(logger, log_i, train_num, valid_num, train_loss)
         
-        # approximate Hessian spectrum using SLQ, on training data and validation data
-        print("=======> SLQ")
-        with sdpa_kernel(SDPBackend.MATH):
-            #train_values_full, train_weights_full = self.get_full_spectrum(n_v=n_v, n_iter=n_iter, dataloader=self.dataloader)
-            #valid_values_full, valid_weights_full = self.get_full_spectrum(n_v=n_v, n_iter=n_iter, dataloader=self.valid_dataloader)
-            train_values_full, train_weights_full = self.get_train_spectrum(n_v, n_iter)
-            valid_values_full, valid_weights_full = self.get_valid_spectrum(n_v, n_iter)
+        # # approximate Hessian spectrum using SLQ, on training data and validation data
+        # print("=======> SLQ")
+        # with sdpa_kernel(SDPBackend.MATH):
+        #     #train_values_full, train_weights_full = self.get_full_spectrum(n_v=n_v, n_iter=n_iter, dataloader=self.dataloader)
+        #     #valid_values_full, valid_weights_full = self.get_full_spectrum(n_v=n_v, n_iter=n_iter, dataloader=self.valid_dataloader)
+        #     train_values_full, train_weights_full = self.get_train_spectrum(n_v, n_iter)
+        #     #valid_values_full, valid_weights_full = self.get_valid_spectrum(n_v, n_iter)
 
-        # model norm, use in the Hessian bound
-        r = compute_model_norm(self.model)
+        # # model norm, use in the Hessian bound
+        # r = compute_model_norm(self.model)
 
-        train_values_tensor = torch.tensor(train_values_full, dtype=torch.float32)
-        train_weights_tensor = torch.tensor(train_weights_full, dtype=torch.float32)
-        train_pos_mask = train_values_tensor > 0
-        train_neg_mask = train_values_tensor < 0
+        # train_values_tensor = torch.tensor(train_values_full, dtype=torch.float32)
+        # train_weights_tensor = torch.tensor(train_weights_full, dtype=torch.float32)
+        # #train_pos_mask = train_values_tensor > 0
+        # #train_neg_mask = train_values_tensor < 0
 
-        valid_values_tensor = torch.tensor(valid_values_full, dtype=torch.float32)
-        valid_weights_tensor = torch.tensor(valid_weights_full, dtype=torch.float32)
-        valid_pos_mask = valid_values_tensor > 0
-        valid_neg_mask = valid_values_tensor < 0
+        # #valid_values_tensor = torch.tensor(valid_values_full, dtype=torch.float32)
+        # #valid_weights_tensor = torch.tensor(valid_weights_full, dtype=torch.float32)
+        # #valid_pos_mask = valid_values_tensor > 0
+        # #valid_neg_mask = valid_values_tensor < 0
 
-        # Some spectrum metrics that might be useful: effective rank , entropy, weighted entropy
-        train_effective_rank = self.compute_effective_rank(train_values_tensor[train_pos_mask], train_weights_tensor[train_pos_mask])
-        train_entropy, train_weighted_entropy, train_centroid, train_spread = self.compute_spectral_entropy(train_values_full[train_pos_mask], train_weights_full[train_pos_mask], sigma=0.01, grid=1000)
-        valid_effective_rank = self.compute_effective_rank(valid_values_tensor[valid_pos_mask], valid_weights_tensor[valid_pos_mask])
-        valid_entropy, valid_weighted_entropy, valid_centroid, valid_spread = self.compute_spectral_entropy(valid_values_full[valid_pos_mask], valid_weights_full[valid_pos_mask], sigma=0.01, grid=1000)
+        # # Some spectrum metrics that might be useful: effective rank , entropy, weighted entropy
+        # #train_effective_rank = self.compute_effective_rank(train_values_tensor[train_pos_mask], train_weights_tensor[train_pos_mask])
+        # #train_entropy, train_weighted_entropy, train_centroid, train_spread = self.compute_spectral_entropy(train_values_full[train_pos_mask], train_weights_full[train_pos_mask], sigma=0.01, grid=1000)
+        # #valid_effective_rank = self.compute_effective_rank(valid_values_tensor[valid_pos_mask], valid_weights_tensor[valid_pos_mask])
+        # #valid_entropy, valid_weighted_entropy, valid_centroid, valid_spread = self.compute_spectral_entropy(valid_values_full[valid_pos_mask], valid_weights_full[valid_pos_mask], sigma=0.01, grid=1000)
 
-        # Compute the trace bound and spectral bound
-        d = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        C = np.sqrt(5)
+        # # Compute the trace bound and spectral bound
+        # d = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # C = np.sqrt(5)
         
-        # trace and bound, computed on validation data
-        valid_hessian_trace = torch.sum(valid_values_tensor * valid_weights_tensor) * d
-        trace_bound = torch.sqrt(torch.tensor(valid_hessian_trace/valid_num)) * r
-        spectral_bound = torch.sqrt(torch.tensor(valid_weighted_entropy/valid_num)) * r
+        # # trace and bound, computed on validation data
+        # #valid_hessian_trace = torch.sum(valid_values_tensor * valid_weights_tensor) * d
+        # hessian_trace = torch.sum(train_values_tensor * train_weights_tensor) * d
+        # trace_bound = torch.sqrt(torch.tensor(hessian_trace/train_num)) * r
+        # #spectral_bound = torch.sqrt(torch.tensor(valid_weighted_entropy/valid_num)) * r
 
-        # log results to logger
-        logger.log("train_effective_rank", train_effective_rank.item(), log_i)
-        logger.log("train_entropy", train_entropy.item(), log_i)
-        logger.log("train_weighted_entropy", train_weighted_entropy.item(), log_i)
-        logger.log("valid_effective_rank", valid_effective_rank.item(), log_i)
-        logger.log("valid_entropy", valid_entropy.item(), log_i)
-        logger.log("valid_weighted_entropy", valid_weighted_entropy.item(), log_i)
-        logger.log("trace_bound", trace_bound.item(), log_i)
-        logger.log("spectral_bound", spectral_bound.item(), log_i)
+        # # log results to logger
+        # #logger.log("train_effective_rank", train_effective_rank.item(), log_i)
+        # #logger.log("train_entropy", train_entropy.item(), log_i)
+        # #logger.log("train_weighted_entropy", train_weighted_entropy.item(), log_i)
+        # # logger.log("valid_effective_rank", valid_effective_rank.item(), log_i)
+        # # logger.log("valid_entropy", valid_entropy.item(), log_i)
+        # # logger.log("valid_weighted_entropy", valid_weighted_entropy.item(), log_i)
+        # # logger.log("trace_bound", trace_bound.item(), log_i)
+        # # logger.log("spectral_bound", spectral_bound.item(), log_i)
 
-        # plot results in logger
-        plot_curves(log=logger, data_names=['train_effective_rank', 'valid_effective_rank'], path_name='entropy', file_name='effective_rank')
-        plot_curves(log=logger, data_names=['train_entropy', 'valid_entropy'], path_name='entropy', file_name='entropy')
-        plot_curves(log=logger, data_names=['train_weighted_entropy', 'valid_weighted_entropy'], path_name='entropy', file_name='weighted_entropy')
-        plot_curves(log=logger, data_names=["loss_gap", "trace_bound", "spectral_bound", "compression_bound"], path_name='bound', file_name='bound')
+        # # plot results in logger
+        # # plot_curves(log=logger, data_names=['train_effective_rank', 'valid_effective_rank'], path_name='entropy', file_name='effective_rank')
+        # # plot_curves(log=logger, data_names=['train_entropy', 'valid_entropy'], path_name='entropy', file_name='entropy')
+        # # plot_curves(log=logger, data_names=['train_weighted_entropy', 'valid_weighted_entropy'], path_name='entropy', file_name='weighted_entropy')
+        # # plot_curves(log=logger, data_names=["loss_gap", "trace_bound", "spectral_bound", "compression_bound"], path_name='bound', file_name='bound')
+
+        return 0, compression_bound
 
     def noisy_loss(self, logger, log_i, train_loss, val_loss, train_num, valid_num, noise_scale):
         print("=======> hessian")
@@ -1367,3 +1367,40 @@ def plot_curves(log, data_names, path_name, file_name=None, yabel='Hessian', sav
     plt.savefig(f"{save_dir}{path_name}/{file_name}_{log.label}.png", dpi=150)
     plt.draw()
     plt.close()
+
+def sqrt_sum_nonnegative(arr):
+    arr = np.array(arr)
+    arr = np.where(arr < 0, 0, arr)  
+    return np.sum(np.sqrt(arr))  
+
+def get_layers(model):
+    layers = OrderedDict()
+    for name, module in model.named_modules():
+        if (type(module) == torch.nn.Linear) and \
+        ("LayerNorm" not in name and "embeddings" not in name and "pooler" not in name):
+            layers[name] = module
+    return layers
+
+def compute_hessians_quantity(model, loss, device="cpu", state_dict = None):
+    # Get parameters and gradients of corresponding layer
+    with sdpa_kernel(SDPBackend.MATH):
+        layers = model.get_layers()
+        #layers = get_layers(model)
+        weights = [module.weight for name, module in layers.items()]
+        #weights = list(model.parameters())
+        model.zero_grad()
+        gradients = torch.autograd.grad(loss, weights, retain_graph=True, create_graph=True, allow_unused=True)
+        vs = []
+        for name, module in layers.items():
+            weight = module.weight
+            v = weight.detach().clone() - model.init_state[name+".weight"].to(weight.device)
+            vs.append(v)
+
+        model.zero_grad()    
+        Hvs = torch.autograd.grad(gradients, weights, grad_outputs=vs, retain_graph=True)
+
+        layer_hessian_quantities = [torch.sum(Hv*v).cpu().item() for (Hv, v) in zip(Hvs, vs)]
+        
+        out = np.array(layer_hessian_quantities)
+        value = sqrt_sum_nonnegative(out)
+    return value
