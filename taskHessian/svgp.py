@@ -1,6 +1,7 @@
 import torch
 import gpytorch
 from typing import Callable, Optional, Literal, Tuple
+from tqdm import tqdm
 
 # ------------------------- preprocessing helpers -------------------------
 def _standardize_fit(X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,7 +108,7 @@ def make_gpytorch_predictor(
     mlls = [gpytorch.mlls.ExactMarginalLogLikelihood(likes[j], heads[j]) for j in range(len(heads))]
 
     # training loop
-    for it in range(training_iters):
+    for it in tqdm(range(training_iters)):
         optimizer.zero_grad(set_to_none=True)
         total_loss = 0.0
         for j in range(len(heads)):

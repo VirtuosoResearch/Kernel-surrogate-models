@@ -1,6 +1,41 @@
 import torch
 from typing import Iterable, Tuple, Optional, Callable, Literal
+from sklearn.linear_model import Lasso
 
+def lasso_solver_sklearn(X, y, alpha=0.1, max_iter=1000, tol=1e-4, fit_intercept=False):
+    """
+    Solves the Lasso regression problem using scikit-learn's Lasso implementation.
+
+    Args:
+        X (np.ndarray): The feature matrix (n_samples, n_features).
+                        Corresponds to `train_subset_scores`.
+        y (np.ndarray): The target vector (n_samples,).
+        alpha (float): The regularization parameter. A higher value means stronger
+                       regularization and more sparsity. Note: scikit-learn's
+                       objective function is scaled, so this alpha may not be
+                       directly comparable to one in a manual implementation.
+        max_iter (int): The maximum number of iterations for the solver.
+        tol (float): The tolerance for the stopping condition.
+        fit_intercept (bool): Whether to calculate the intercept for this model.
+                              Set to False if your data is already centered.
+
+    Returns:
+        np.ndarray: The learned weight vector `w` (n_features,).
+    """
+    # Initialize the Lasso model from scikit-learn
+    # The `Lasso` class handles the coordinate descent algorithm internally.
+    lasso_model = Lasso(alpha=alpha,
+                        fit_intercept=fit_intercept,
+                        max_iter=max_iter,
+                        tol=tol,
+                        random_state=42) # for reproducibility
+
+    # Fit the model to the data
+    lasso_model.fit(X, y)
+
+    # The learned weights are stored in the .coef_ attribute
+    return lasso_model.coef_
+    
 # ---------- utilities ----------
 def _pairwise_sq_dists(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
     A2 = (A*A).sum(dim=1, keepdim=True)           # (na,1)
@@ -147,11 +182,6 @@ def make_krr_predictor_cv(
 
 # ----------------------------- shared kernel utils -----------------------------
 KernelName = Literal["rbf", "linear", "poly"]
-
-def _pairwise_sq_dists(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-    A2 = (A*A).sum(dim=1, keepdim=True)
-    B2 = (B*B).sum(dim=1, keepdim=True).T
-    return (A2 + B2 - 2 * (A @ B.T)).clamp_min(0.0)
 
 def _kernel_and_diag(
     A: torch.Tensor,

@@ -5,7 +5,7 @@ import os
 import re
 from scipy.stats import spearmanr
 from typing import Callable, Literal, Optional
-from taskHessian.solver import make_krr_predictor_cv, make_gp_predictor, make_svgp_predictor
+from taskHessian.solver import make_krr_predictor_cv, make_gp_predictor, make_svgp_predictor, lasso_solver_sklearn
 from taskHessian.svgp import make_gpytorch_predictor, make_gpytorch_svgp_predictor
 
 KernelName = Literal["rbf", "linear", "poly"]
@@ -159,6 +159,7 @@ def calculate_normalized_error(
     return {
         "mse": residual_error_mse.item(),
         "total_variance": total_variance.item(),
+        'residual_error_mse': residual_error_mse.item(),
         "normalized_error": normalized_error.item(),
         "r_squared": r_squared.item()
     }
@@ -260,6 +261,32 @@ def solve_lasso_regression(
 
     return phi
 
+def compute_margin(outputs, targets):
+    true_logits = outputs[torch.arange(outputs.size(0)), targets]
+    
+    # mask out the true class to find the highest logit among others
+    masked_outputs = outputs.clone()
+    masked_outputs[torch.arange(outputs.size(0)), targets] = float('-inf')
+    max_other_logits = masked_outputs.max(dim=1).values
+    
+    return true_logits - max_other_logits
+
+def eval_test_margin(model, loss_fn, load_batch_fn, test_dataset, batch_size, batch_num, device='cuda'):
+
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=torch.cuda.is_available())
+    batch_margin_list = []
+    total_margin = 0.0
+    with torch.no_grad():
+        for i, (batch) in enumerate(test_loader):
+            inputs, targets, batch_size = load_batch_fn(batch, device)
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs).detach()
+            margin = compute_margin(outputs[:, -1], targets[:, -1])
+            batch_margin_list.append(margin.item())
+            if (i >= batch_num - 1) or (i >= len(test_dataset) - 1):
+                break
+    return batch_margin_list
+
 def eval_test_loss(model, loss_fn, load_batch_fn, test_dataset, batch_size, batch_num, device='cuda'):
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=torch.cuda.is_available())
 
@@ -277,8 +304,11 @@ def eval_test_loss(model, loss_fn, load_batch_fn, test_dataset, batch_size, batc
                 break
     return batch_loss_list
 
-def get_subset_scores(model, model_path, model_name, run_name, use_nso, train_ids_list, loss_fn, load_batch_fn, test_dataset, test_batch_size=1, test_batch_num=50, device='cuda'):
-    score_path = './results/scores'
+def get_subset_scores(model, model_path, model_name, run_name, use_nso, train_ids_list, loss_fn, load_batch_fn, test_dataset, test_batch_size=1, test_batch_num=50, metric='loss', device='cuda'):
+    if metric == 'loss':
+        score_path = './results/scores'
+    elif metric == 'margin':
+        score_path = './results/margin_scores'
     if not os.path.exists(score_path):
         os.makedirs(score_path)
     if run_name != '':
@@ -313,7 +343,10 @@ def get_subset_scores(model, model_path, model_name, run_name, use_nso, train_id
         model_file = model_file_list[i]
         model.load_state_dict(torch.load(model_file, map_location='cpu'))
         model.eval()
-        scores = eval_test_loss(model, loss_fn, load_batch_fn, test_dataset, test_batch_size, test_batch_num, device)
+        if metric == 'loss':
+            scores = eval_test_loss(model, loss_fn, load_batch_fn, test_dataset, test_batch_size, test_batch_num, device)
+        elif metric == 'margin':
+            scores = eval_test_margin(model, loss_fn, load_batch_fn, test_dataset, test_batch_size, test_batch_num, device)
         subset_scores.append(scores)
     subset_scores = torch.tensor(subset_scores)
     print("Subset scores shape:", subset_scores.shape)
@@ -331,7 +364,7 @@ def _flatten_ids(ids):
         parts.append(np.asarray(x).ravel())
     return np.concatenate(parts) if parts else np.array([], dtype=int)
 
-def datamodels(subset_scores, model_path, model_name, train_ids_list, data_affinity_matrix=None, test_batch_num=50, num_train=0):
+def datamodels(subset_scores, model_path, model_name, train_ids_list, data_affinity_matrix=None, test_batch_num=50, num_train=0, solver='lstsq'):
     #num_samples = np.max(train_ids_list) + 1
     num_samples = np.max(_flatten_ids(train_ids_list)) + 1
     pattern = re.compile(rf"^{re.escape(model_name)}_\w+\.pth$")
@@ -342,12 +375,11 @@ def datamodels(subset_scores, model_path, model_name, train_ids_list, data_affin
     #         model_file_list.append(model_file)
     # model_file_list.sort()
     num_models = 0
-    for file in os.listdir(model_path):
-        if pattern.match(file):
+    for i in range(50):
+        model_file = os.path.join(model_path, f"{model_name}_{i}_100.pth")
+        if os.path.exists(model_file):
+            model_file_list.append(model_file)
             num_models += 1
-    for i in range(num_models):
-        model_file = os.path.join(model_path, f"{model_name}_{i}.pth")
-        model_file_list.append(model_file)
     print(f"Found {num_models} models matching the pattern '{model_name}' in '{model_path}'.")
 
     if num_train <= 0 or num_train > num_models:
@@ -379,21 +411,30 @@ def datamodels(subset_scores, model_path, model_name, train_ids_list, data_affin
     # train_subset_scores = train_subset_scores - aff_item
     #Phi = solve_ridge_regression(train_w, train_subset_scores, alpha=1e10, driver='gelss')
     #Phi = solve_lasso_regression(train_w, train_subset_scores, alpha=1)
-    Phi = torch.linalg.lstsq(train_w, train_subset_scores, driver='gelss').solution
-    pred_test_scores = test_w @ Phi
-    # predict = make_krr_predictor(train_w, train_subset_scores, alpha=1e-2, kernel="rbf")
-    # # #predict, info = make_krr_predictor_cv(train_w, train_subset_scores)
-    # # #predict = make_krr_predictor(train_w, train_subset_scores, alpha=1e-2, kernel="linear", degree=2, coef0=0.0)
-    # pred_test_scores = predict(test_w)
-    # Predict on test set
-    # gp_predict = make_gp_predictor(train_w.numpy(), train_subset_scores.numpy(), alpha=1e-2)
-    # pred_test_scores = gp_predict(test_w.numpy(), return_std=False)
-    # pred_test_scores = torch.tensor(pred_test_scores)
-
-    # gp_predict = make_gp_predictor(train_w, train_subset_scores, noise=1e-1, kernel="rbf")
-    # pred_test_scores = gp_predict(test_w)
-    # svgp_predict = make_svgp_predictor(train_w, train_subset_scores, m_inducing=512, noise=1e-2)
-    # pred_test_scores = svgp_predict(test_w)
+    if solver == 'lstsq':
+        Phi = torch.linalg.lstsq(train_w, train_subset_scores, driver='gelss').solution
+        pred_test_scores = test_w @ Phi
+    elif solver == 'lasso':
+        Phi = lasso_solver_sklearn(train_w.numpy(), train_subset_scores.numpy(), alpha=1e-1)
+        Phi = torch.tensor(Phi).T
+        pred_test_scores = test_w @ Phi
+    elif solver == 'ridge':
+        Phi = solve_ridge_regression(train_w, train_subset_scores, alpha=1e10, driver='gelss')
+        pred_test_scores = test_w @ Phi
+    elif solver == 'krr':
+        predict = make_krr_predictor(train_w, train_subset_scores, alpha=1e-2, kernel="rbf")
+        pred_test_scores = predict(test_w)
+    elif solver == 'gp':
+        predict = make_gp_predictor(train_w, train_subset_scores, noise=1e-2, kernel="rbf")
+        pred_test_scores = predict(test_w)
+    elif solver == 'svgp':
+        predict = make_svgp_predictor(train_w, train_subset_scores, m_inducing=512, noise=1e-2)
+        pred_test_scores = predict(test_w)
+    elif solver == 'gpytorch':
+        predict = make_gpytorch_predictor(train_w.cuda(), train_subset_scores.cuda(), training_iters=0, lr=0.1)
+        pred_test_scores = predict(test_w.cuda()).cpu()
+    else:
+        raise ValueError(f"Unknown solver: {solver}")
 
     
     residuals_list = []
@@ -442,4 +483,107 @@ def datamodels(subset_scores, model_path, model_name, train_ids_list, data_affin
     #     'phi': Phi.tolist(),
     #     'spearman_corr': spearmans_list,
     # }
+    return results
+
+def epoch_datamodels(subset_scores, model_path, model_name, epoch, train_ids_list, data_affinity_matrix=None, test_batch_num=50, num_train=0, solver='lstsq'):
+    #num_samples = np.max(train_ids_list) + 1
+    num_samples = np.max(_flatten_ids(train_ids_list)) + 1
+    model_file_list = []
+    # for file in os.listdir(model_path):
+    #     if pattern.match(file):
+    #         model_file = os.path.join(model_path, file)
+    #         model_file_list.append(model_file)
+    # model_file_list.sort()
+    for i in range(50):
+        model_file = os.path.join(model_path, f"{model_name}_{i}_{epoch}.pth")
+        if os.path.exists(model_file):
+            model_file_list.append(model_file)
+        else:
+            break
+    num_models = len(model_file_list)
+    print(f"Found {num_models} models matching the pattern '{model_name}' in '{model_path}'.")
+
+    if num_train <= 0 or num_train > num_models:
+        num_train = num_models
+    print(f"Total number of models: {num_models}")
+    train_subset_scores = subset_scores[:num_train]
+    test_subset_scores = subset_scores[num_train:]
+    print(f"Using only the first {num_train} models for training.")
+
+    w_list = []
+    for subset_index in range(num_models):
+        w_i = torch.zeros(num_samples)
+        w_i[train_ids_list[subset_index]] = 1
+        w_list.append(w_i)
+    w = torch.stack(w_list, dim=0)
+    train_w = w[:num_train]
+    test_w = w[num_train:]
+
+    train_w = train_w
+    test_w = test_w
+    train_subset_scores = train_subset_scores
+    test_subset_scores = test_subset_scores
+
+    results_list = []
+    test_batch_num = min(test_batch_num, test_subset_scores.shape[1])
+
+    # data affinity to train_w
+    # aff_item = train_w.T @ data_affinity_matrix @ train_w
+    # train_subset_scores = train_subset_scores - aff_item
+    #Phi = solve_ridge_regression(train_w, train_subset_scores, alpha=1e10, driver='gelss')
+    #Phi = solve_lasso_regression(train_w, train_subset_scores, alpha=1)
+    if solver == 'lstsq':
+        Phi = torch.linalg.lstsq(train_w, train_subset_scores, driver='gelss').solution
+        pred_test_scores = test_w @ Phi
+    elif solver == 'lasso':
+        Phi = lasso_solver_sklearn(train_w.numpy(), train_subset_scores.numpy(), alpha=1e-1)
+        Phi = torch.tensor(Phi).T
+        pred_test_scores = test_w @ Phi
+    elif solver == 'ridge':
+        Phi = solve_ridge_regression(train_w, train_subset_scores, alpha=1e10, driver='gelss')
+        pred_test_scores = test_w @ Phi
+    elif solver == 'krr':
+        predict = make_krr_predictor(train_w, train_subset_scores, alpha=1e-2, kernel="rbf")
+        pred_test_scores = predict(test_w)
+    elif solver == 'gp':
+        predict = make_gp_predictor(train_w, train_subset_scores, noise=1e-2, kernel="rbf")
+        pred_test_scores = predict(test_w)
+    elif solver == 'svgp':
+        predict = make_svgp_predictor(train_w, train_subset_scores, m_inducing=512, noise=1e-2)
+        pred_test_scores = predict(test_w)
+    elif solver == 'gpytorch':
+        predict = make_gpytorch_predictor(train_w.cuda(), train_subset_scores.cuda(), training_iters=0, lr=0.1)
+        pred_test_scores = predict(test_w.cuda()).cpu()
+    else:
+        raise ValueError(f"Unknown solver: {solver}")
+
+    # print(f"Predicted test scores shape: {pred_test_scores.shape}")
+    # print(f"Test subset scores shape: {test_subset_scores.shape}")
+    # print(f"Train subset scores shape: {train_subset_scores.shape}")
+    # print(f"Train weights shape: {train_w.shape}")
+    # print(f"Test weights shape: {test_w.shape}")
+    # print(f"Phi shape: {Phi.shape}")
+
+    residual_error_mse_list = []
+    errors_list = []
+    spearmans_list = []
+
+    for j in range(pred_test_scores.shape[1]):
+        true_scores = test_subset_scores[:, j]
+        pred_scores = pred_test_scores[:, j]
+        result = calculate_normalized_error(pred_scores, true_scores)
+        errors_list.append(float(result['normalized_error']))
+        residual_error_mse_list.append(float(result['residual_error_mse']))
+        rho, _ = spearmanr(
+            true_scores.detach().cpu().numpy(),
+            pred_scores.detach().cpu().numpy()
+        )
+        spearmans_list.append(float(rho))
+    results = {
+        'error': errors_list,
+        'residual_error_mse': residual_error_mse_list,
+        #'phi': Phi.tolist(),
+        'spearman_corr': spearmans_list,
+    }
+
     return results
