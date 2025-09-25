@@ -1,5 +1,0 @@
-optimizer:
-  name: NSM
-  optimizer_kwargs:
-    sigma: 0.01
-    distribution: normal
