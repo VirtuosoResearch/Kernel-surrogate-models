@@ -5,11 +5,10 @@ experiment scripts for modular arithmetic, CIFAR, and in-context learning (ICL).
 
 ## Repository layout
 
-- `taskHessian/`: Python package with Hessian utilities, datamodels, solvers, and plotting.
+- `kernelsm/`: Python package with Kernelsm utilities, datamodels, solvers, and plotting.
 - `src/exp_modular_arithmetic/`: Modular arithmetic experiments (training, influence, TRAK, bounds).
 - `src/exp_cifar/`: CIFAR experiments (training, influence functions, TRAK).
 - `src/exp_icl/`: ICL prompt generation and inference utilities.
-- `src/figrues/`: Notebooks used to generate figures.
 
 ## Setup
 
