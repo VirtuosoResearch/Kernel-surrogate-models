@@ -1,4 +1,4 @@
-# Kernel Surrogate Models / taskHessian
+# Kernel Surrogate Models
 
 Research code for task-level Hessian and kernel-based surrogate modeling, plus
 experiment scripts for modular arithmetic, CIFAR, and in-context learning (ICL).
