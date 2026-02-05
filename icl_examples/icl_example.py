@@ -10,7 +10,7 @@ import re
 
 
 from scipy.stats import spearmanr
-from taskHessian.kernelsm import kernelsm_score
+from kernelsm.kernelsm import kernelsm_score
 
 if __name__ == "__main__":
     parser = ArgumentParser()

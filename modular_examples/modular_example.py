@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from scipy.stats import spearmanr
 
-from taskHessian.datamodels import make_krr_predictor
+from kernelsm.datamodels import make_krr_predictor
 
 def parse_args():
     parser = ArgumentParser()
